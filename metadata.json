@@ -1,0 +1,9 @@
+{
+  "name": "QPass",
+  "description": "An automatic quick registration system with voice assistance, custom event forms, and automatic photo capture.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": []
+}

@@ -1,0 +1,80 @@
+{
+  "collections": {
+    "registrations": {
+      "description": "Log of registered visitors with dynamic form answers",
+      "fields": {
+        "id": {
+          "type": "string",
+          "description": "Primary key / registration document ID"
+        },
+        "eventId": {
+          "type": "string",
+          "description": "Identifier of the event this registration belongs to"
+        },
+        "eventName": {
+          "type": "string",
+          "description": "Human-readable name of the event"
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "ISO timestamp representing the check-in time"
+        },
+        "fields": {
+          "type": "map",
+          "description": "Mapping of field identifiers (e.g. name, mobile, photo, purpose) to their collected values"
+        }
+      }
+    },
+    "configs": {
+      "description": "Persistent dynamic application configurations, syncable across installations",
+      "fields": {
+        "id": {
+          "type": "string",
+          "description": "Document ID, either 'event_config' or 'voice_instructions'"
+        },
+        "data": {
+          "type": "map",
+          "description": "Dynamic mapping containing configuration data"
+        }
+      }
+    },
+    "users": {
+      "description": "Organizer profiles storing authentication details and role info",
+      "fields": {
+        "uid": {
+          "type": "string",
+          "description": "Unique identifier of the organizer"
+        },
+        "email": {
+          "type": "string",
+          "description": "Email address of the organizer"
+        },
+        "role": {
+          "type": "string",
+          "description": "User role, typically 'organizer'"
+        }
+      }
+    },
+    "events": {
+      "description": "Event structures managed by organizers",
+      "fields": {
+        "id": {
+          "type": "string",
+          "description": "Unique event identifier"
+        },
+        "userId": {
+          "type": "string",
+          "description": "The organizer who owns the event"
+        },
+        "name": {
+          "type": "string",
+          "description": "Name of the event"
+        },
+        "fields": {
+          "type": "array",
+          "description": "List of dynamic custom field configurations for visitor check-in"
+        }
+      }
+    }
+  }
+}
