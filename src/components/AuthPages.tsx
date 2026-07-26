@@ -58,11 +58,16 @@ export function AuthPages({ isDark, onToggleTheme, onAuthSuccess }: AuthPagesPro
     };
   }, []);
 
-  // Setup Recaptcha container
+  // Setup Recaptcha container with clean re-initialization
   const setupRecaptcha = (containerId: string) => {
     try {
       if ((window as any).recaptchaVerifier) {
-        return (window as any).recaptchaVerifier;
+        try {
+          ((window as any).recaptchaVerifier).clear();
+        } catch (e) {
+          console.warn("Cleared existing recaptcha verifier");
+        }
+        (window as any).recaptchaVerifier = null;
       }
       
       const verifier = new RecaptchaVerifier(auth, containerId, {
@@ -80,6 +85,17 @@ export function AuthPages({ isDark, onToggleTheme, onAuthSuccess }: AuthPagesPro
     } catch (err: any) {
       console.error("reCAPTCHA initialization error:", err);
       return null;
+    }
+  };
+
+  const clearRecaptcha = () => {
+    if ((window as any).recaptchaVerifier) {
+      try {
+        ((window as any).recaptchaVerifier).clear();
+      } catch (e) {
+        // ignore
+      }
+      (window as any).recaptchaVerifier = null;
     }
   };
 
@@ -114,6 +130,18 @@ export function AuthPages({ isDark, onToggleTheme, onAuthSuccess }: AuthPagesPro
     setView('landing');
   };
 
+  // Helper to format clean E.164 phone number
+  const getFormattedMobile = () => {
+    const isSandbox = localMobile.trim() === '123456789' || localMobile.trim() === '9999999999';
+    if (isSandbox) {
+      return { isSandbox: true, formattedMobile: '123456789', e164Mobile: '+911234567890' };
+    }
+    const cleanCountry = countryCode.trim().startsWith('+') ? countryCode.trim() : `+${countryCode.trim().replace(/\D/g, '')}`;
+    const cleanLocal = localMobile.trim().replace(/\D/g, '').replace(/^0+/, '');
+    const formatted = `${cleanCountry}${cleanLocal}`;
+    return { isSandbox: false, formattedMobile: formatted, e164Mobile: formatted };
+  };
+
   // Login handler
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -122,13 +150,12 @@ export function AuthPages({ isDark, onToggleTheme, onAuthSuccess }: AuthPagesPro
     setSmsRegionError(false);
     setHostnameError(false);
     
-    const isSandbox = localMobile.trim() === '123456789';
+    const { isSandbox, formattedMobile, e164Mobile } = getFormattedMobile();
     const currentAuthMode = isSandbox ? 'simulated' : authMode;
-    const formattedMobile = isSandbox ? '123456789' : `${countryCode.trim()}${localMobile.trim()}`;
     setMobile(formattedMobile);
     
     if (!formattedMobile || formattedMobile.length < 8) {
-      setErrorMsg('Please enter a valid mobile number');
+      setErrorMsg('Please enter a valid mobile number with country code (e.g. +91 9876543210)');
       return;
     }
 
@@ -179,13 +206,10 @@ export function AuthPages({ isDark, onToggleTheme, onAuthSuccess }: AuthPagesPro
         // 1. Initialize Invisible reCAPTCHA
         const verifier = setupRecaptcha('recaptcha-container');
         if (!verifier) {
-          throw new Error('Failed to initialize the security reCAPTCHA verifier.');
+          throw new Error('Failed to initialize security verification. Please try Sandbox Mode.');
         }
 
-        // 2. Ensure number is in E.164 format. If no leading +, prepend + (assuming default or let user input country code)
-        const e164Mobile = formattedMobile.startsWith('+') ? formattedMobile : `+${formattedMobile.replace(/\D/g, '')}`;
-        
-        // 3. Trigger Firebase Phone Auth
+        // 2. Trigger Firebase Phone Auth
         const confirmation = await signInWithPhoneNumber(auth, e164Mobile, verifier);
         setConfirmationResult(confirmation);
         setView('otp_verify');
@@ -201,25 +225,26 @@ export function AuthPages({ isDark, onToggleTheme, onAuthSuccess }: AuthPagesPro
       }
     } catch (err: any) {
       console.error("Firebase Phone Sign In Error:", err);
+      clearRecaptcha();
       let errMsg = err.message || 'Error checking user credentials. Please try again.';
       
       const errStr = String(err.message || '').toLowerCase() + ' ' + String(err.code || '').toLowerCase();
       
       if (errStr.includes('too_short') || errStr.includes('too-short') || err.code === 'auth/invalid-phone-number') {
-        errMsg = 'The mobile number you entered is invalid or too short. Please ensure you entered the correct country code (e.g. +91 for India, +1 for US) followed by the rest of your number.';
+        errMsg = 'The mobile number you entered is invalid. Please ensure you entered the correct country code (e.g. +91 for India, +1 for US) followed by your 10-digit number.';
       } else if (errStr.includes('region enabled') || errStr.includes('sms unable to be sent') || err.code === 'auth/operation-not-allowed') {
-        errMsg = 'SMS Delivery Regional Restriction: SMS messages cannot be sent to this region until enabled by the developer in the Firebase Console. See step-by-step resolution instructions below!';
+        errMsg = 'SMS Delivery Restriction: SMS messages cannot be delivered to this region until enabled in Firebase Console, or daily limit reached. Toggle Sandbox Mode below to test instantly!';
         setSmsRegionError(true);
         setRecaptchaError(true);
       } else if (errStr.includes('hostname match') || errStr.includes('captcha-check-failed') || err.code === 'auth/captcha-check-failed') {
-        errMsg = 'reCAPTCHA Hostname Authorization Error: This domain/hostname is not authorized in your Firebase project configurations. Please see the detailed domain authorization resolution guide below!';
+        errMsg = 'Domain Authorization Notice: This hostname is not authorized in Firebase Console settings. Switch to Sandbox Mode below or add domain in Firebase Console.';
         setHostnameError(true);
         setRecaptchaError(true);
       } else if (err.code === 'auth/invalid-app-credential') {
-        errMsg = 'Invalid app credentials or iframe domain restriction. Please toggle Sandbox Mode below to test.';
+        errMsg = 'Invalid app credentials or iframe domain restriction. Please switch to Sandbox Mode below to test.';
         setRecaptchaError(true);
-      } else if (err.code === 'auth/too-many-requests') {
-        errMsg = 'SMS quota exceeded or requests blocked for security. Please try Sandbox Mode.';
+      } else if (err.code === 'auth/too-many-requests' || err.code === 'auth/quota-exceeded') {
+        errMsg = 'Firebase daily SMS quota (10 SMS/day on Spark free tier) exceeded. Please switch to Sandbox Mode to continue testing.';
         setRecaptchaError(true);
       }
       setErrorMsg(errMsg);
@@ -236,9 +261,8 @@ export function AuthPages({ isDark, onToggleTheme, onAuthSuccess }: AuthPagesPro
     setSmsRegionError(false);
     setHostnameError(false);
 
-    const isSandbox = localMobile.trim() === '123456789';
+    const { isSandbox, formattedMobile, e164Mobile } = getFormattedMobile();
     const currentAuthMode = isSandbox ? 'simulated' : authMode;
-    const formattedMobile = isSandbox ? '123456789' : `${countryCode.trim()}${localMobile.trim()}`;
     setMobile(formattedMobile);
 
     if (!name.trim() || !formattedMobile || !email.trim()) {
@@ -281,13 +305,10 @@ export function AuthPages({ isDark, onToggleTheme, onAuthSuccess }: AuthPagesPro
         // 1. Initialize Invisible reCAPTCHA
         const verifier = setupRecaptcha('recaptcha-container');
         if (!verifier) {
-          throw new Error('Failed to initialize the security reCAPTCHA verifier.');
+          throw new Error('Failed to initialize security verification. Please try Sandbox Mode.');
         }
 
-        // 2. Ensure number is in E.164 format.
-        const e164Mobile = formattedMobile.startsWith('+') ? formattedMobile : `+${formattedMobile.replace(/\D/g, '')}`;
-
-        // 3. Trigger Firebase Phone Auth
+        // 2. Trigger Firebase Phone Auth
         const confirmation = await signInWithPhoneNumber(auth, e164Mobile, verifier);
         setConfirmationResult(confirmation);
         setView('otp_verify');
@@ -303,25 +324,26 @@ export function AuthPages({ isDark, onToggleTheme, onAuthSuccess }: AuthPagesPro
       }
     } catch (err: any) {
       console.error("Firebase Phone Sign Up Error:", err);
+      clearRecaptcha();
       let errMsg = err.message || 'Error connecting to database. Please try again.';
       
       const errStr = String(err.message || '').toLowerCase() + ' ' + String(err.code || '').toLowerCase();
       
       if (errStr.includes('too_short') || errStr.includes('too-short') || err.code === 'auth/invalid-phone-number') {
-        errMsg = 'The mobile number you entered is invalid or too short. Please ensure you entered the correct country code (e.g. +91 for India, +1 for US) followed by the rest of your number.';
+        errMsg = 'The mobile number you entered is invalid. Please ensure you entered the correct country code (e.g. +91 for India) followed by your 10-digit number.';
       } else if (errStr.includes('region enabled') || errStr.includes('sms unable to be sent') || err.code === 'auth/operation-not-allowed') {
-        errMsg = 'SMS Delivery Regional Restriction: SMS messages cannot be sent to this region until enabled by the developer in the Firebase Console. See step-by-step resolution instructions below!';
+        errMsg = 'SMS Delivery Restriction: SMS messages cannot be sent to this region until enabled in Firebase Console. Toggle Sandbox Mode below to test!';
         setSmsRegionError(true);
         setRecaptchaError(true);
       } else if (errStr.includes('hostname match') || errStr.includes('captcha-check-failed') || err.code === 'auth/captcha-check-failed') {
-        errMsg = 'reCAPTCHA Hostname Authorization Error: This domain/hostname is not authorized in your Firebase project configurations. Please see the detailed domain authorization resolution guide below!';
+        errMsg = 'Domain Authorization Notice: This domain is not authorized in Firebase Console settings. Switch to Sandbox Mode below or add domain in Firebase Console.';
         setHostnameError(true);
         setRecaptchaError(true);
       } else if (err.code === 'auth/invalid-app-credential') {
-        errMsg = 'Invalid credentials or iframe domain restriction. Please toggle Sandbox Mode below to test.';
+        errMsg = 'Invalid credentials or iframe domain restriction. Please switch to Sandbox Mode below to test.';
         setRecaptchaError(true);
-      } else if (err.code === 'auth/too-many-requests') {
-        errMsg = 'SMS requests blocked for security. Please try Sandbox Mode.';
+      } else if (err.code === 'auth/too-many-requests' || err.code === 'auth/quota-exceeded') {
+        errMsg = 'Firebase daily SMS quota (10 SMS/day on Spark free tier) reached. Switch to Sandbox Mode to test.';
         setRecaptchaError(true);
       }
       setErrorMsg(errMsg);

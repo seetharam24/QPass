@@ -11,7 +11,8 @@ import { EventConfig, FieldConfig, VisitorRegistration, UserProfile } from './ty
 import { speak, VoiceListener, isSpeechRecognitionSupported, isSpeechSynthesisSupported, unlockSpeechSynthesis } from './utils/speech';
 import { 
   Moon, Sun, ShieldAlert, CheckCircle, Flame, Clock, 
-  Wifi, Battery, Smartphone, Play, Square, Settings, UserCheck, Mic, ArrowRight, UserPlus, ArrowLeft, LogOut
+  Wifi, Battery, Smartphone, Play, Square, Settings, UserCheck, Mic, ArrowRight, UserPlus, ArrowLeft, LogOut,
+  HelpCircle, Info, X, Volume2
 } from 'lucide-react';
 import { DEFAULT_EVENT_CONFIG, VOICE_INSTRUCTIONS, UI_SUGGESTIONS, DEFAULT_VOICE_INSTRUCTIONS, VoiceInstructionsConfig } from './constants/voiceInstructions';
 import { collection, doc, setDoc, deleteDoc, onSnapshot, query, orderBy, writeBatch, getDocs, getDoc } from 'firebase/firestore';
@@ -64,6 +65,8 @@ export default function App() {
   const [activeSpeakingField, setActiveSpeakingField] = useState<string | null>(null);
   const [activeListeningField, setActiveListeningField] = useState<string | null>(null);
   const [cameraCountdownTrigger, setCameraCountdownTrigger] = useState(false);
+  const [showVoiceNotice, setShowVoiceNotice] = useState(false);
+  const [showVoiceHelpModal, setShowVoiceHelpModal] = useState(false);
 
   // Current System time for Android Status Bar mockup
   const [systemTime, setSystemTime] = useState<string>('');
@@ -340,6 +343,9 @@ export default function App() {
       stopBackgroundWakeWordRef.current = null;
     }
 
+    // Give Android/iOS audio subsystem 400ms to release recording microphone focus before TTS speaks
+    await new Promise(r => setTimeout(r, 400));
+
     const accumulatedData: Record<string, string> = {};
 
     try {
@@ -388,60 +394,77 @@ export default function App() {
 
         } else {
           // Regular text or tel inputs
-          while (attempts < 2 && !gotAnswer && isAgentRunningRef.current) {
+          const isSttSupported = isSpeechRecognitionSupported();
+
+          if (!isSttSupported) {
+            // STT (Speech Recognition) is not supported in this browser/WebView, but TTS is!
             setAgentStatus(`Asking: ${field.name}`);
             setActiveSpeakingField(field.id);
-
-            if (attempts === 0) {
-              await speak(field.question);
-            } else {
-              // Ask the same question again on delay/timeout
-              await speak(voiceInstructions.RETRY_PREFIX + field.question);
-            }
-
+            await speak(field.question);
             setActiveSpeakingField(null);
 
             if (!isAgentRunningRef.current) return;
 
-            setAgentStatus(`Listening for ${field.name} (5s)...`);
-            setActiveListeningField(field.id);
+            setAgentStatus(`Prompt spoken for ${field.name}. Type on keyboard or tap next.`);
+          } else {
+            while (attempts < 2 && !gotAnswer && isAgentRunningRef.current) {
+              setAgentStatus(`Asking: ${field.name}`);
+              setActiveSpeakingField(field.id);
 
-            const listener = new VoiceListener();
-            const recognizedText = await listener.listenWithTimeout(
-              (text) => {
-                // Interim update
-                setFormData({ ...accumulatedData, [field.id]: text });
-              },
-              (status) => {
-                if (status === 'listening') {
-                  setAgentStatus(`Listening for ${field.name} (5s timeout)...`);
-                } else if (status === 'processing') {
-                  setAgentStatus("Processing voice answer...");
-                }
-              },
-              5 // Strict 5 seconds timeout as requested!
-            );
+              if (attempts === 0) {
+                await speak(field.question);
+              } else {
+                // Ask the same question again on delay/timeout
+                await speak(voiceInstructions.RETRY_PREFIX + field.question);
+              }
 
-            setActiveListeningField(null);
+              setActiveSpeakingField(null);
 
-            if (recognizedText && recognizedText.trim() !== '') {
-              gotAnswer = true;
-              finalAnswerText = recognizedText.trim();
-              accumulatedData[field.id] = finalAnswerText;
-              setFormData({ ...accumulatedData });
-              await speak(voiceInstructions.GOT_ANSWER);
-            } else {
-              attempts++;
+              if (!isAgentRunningRef.current) return;
+
+              // Give OS 350ms to switch audio focus from SpeechSynthesis playback to SpeechRecognition capture
+              await new Promise(r => setTimeout(r, 350));
+
+              setAgentStatus(`Listening for ${field.name} (5s)...`);
+              setActiveListeningField(field.id);
+
+              const listener = new VoiceListener();
+              const recognizedText = await listener.listenWithTimeout(
+                (text) => {
+                  // Interim update
+                  setFormData({ ...accumulatedData, [field.id]: text });
+                },
+                (status) => {
+                  if (status === 'listening') {
+                    setAgentStatus(`Listening for ${field.name} (5s timeout)...`);
+                  } else if (status === 'processing') {
+                    setAgentStatus("Processing voice answer...");
+                  }
+                },
+                5 // Strict 5 seconds timeout as requested!
+              );
+
+              setActiveListeningField(null);
+
+              if (recognizedText && recognizedText.trim() !== '') {
+                gotAnswer = true;
+                finalAnswerText = recognizedText.trim();
+                accumulatedData[field.id] = finalAnswerText;
+                setFormData({ ...accumulatedData });
+                await speak(voiceInstructions.GOT_ANSWER);
+              } else {
+                attempts++;
+              }
             }
-          }
 
-          // If visitor delayed/failed twice, we abort the registration and wait for another visitor
-          if (!gotAnswer && isAgentRunningRef.current) {
-            setAgentStatus("Registration timed out.");
-            await speak(voiceInstructions.TIMEOUT_RESET);
-            setFormData({});
-            initiateWakeWordLoop();
-            return; // Exit flow
+            // If visitor delayed/failed twice, we abort the registration and wait for another visitor
+            if (!gotAnswer && isAgentRunningRef.current) {
+              setAgentStatus("Registration timed out.");
+              await speak(voiceInstructions.TIMEOUT_RESET);
+              setFormData({});
+              initiateWakeWordLoop();
+              return; // Exit flow
+            }
           }
         }
       }
@@ -479,6 +502,12 @@ export default function App() {
 
     // Reset fields
     setFormData({});
+
+    if (!isSpeechRecognitionSupported()) {
+      setAgentStatus("TTS Voice Prompts Active. Tap 'Start Check-In' or fields to hear questions.");
+      return;
+    }
+
     setAgentStatus("Waiting for visitor to say 'Hi' or 'Hey'...");
     
     const listener = new VoiceListener();
@@ -505,10 +534,15 @@ export default function App() {
   const handleToggleAgent = () => {
     if (isAgentRunning) {
       setIsAgentRunning(false);
+      setShowVoiceNotice(false);
     } else {
-      // Prompt permissions check
-      if (!isSpeechRecognitionSupported() || !isSpeechSynthesisSupported()) {
-        alert(voiceInstructions.UNSUPPORTED_BROWSER_ALERT);
+      const sttSupported = isSpeechRecognitionSupported();
+      const ttsSupported = isSpeechSynthesisSupported();
+      
+      if (!sttSupported || !ttsSupported) {
+        setShowVoiceNotice(true);
+      } else {
+        setShowVoiceNotice(false);
       }
       
       // Explicitly unlock SpeechSynthesis inside this direct user gesture handler
@@ -687,6 +721,39 @@ export default function App() {
                 )}
               </button>
             </div>
+
+            {/* Non-intrusive Voice Support Notice Banner */}
+            {showVoiceNotice && (
+              <div className={`mt-2 p-2.5 rounded-xl border flex items-start justify-between gap-2 text-xs transition-all ${
+                isDark ? 'bg-amber-950/40 border-amber-800/50 text-amber-300' : 'bg-amber-50 border-amber-200 text-amber-800'
+              }`}>
+                <div className="flex items-start gap-2">
+                  <Info size={15} className="mt-0.5 shrink-0 text-amber-500" />
+                  <div>
+                    <p className="font-semibold text-[11px] leading-snug">
+                      Speech Recognition is restricted in this WebView/browser.
+                    </p>
+                    <p className="text-[10px] opacity-90 mt-0.5 leading-snug">
+                      Text-to-Speech prompts & standard form input remain active.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setShowVoiceHelpModal(true)}
+                      className="mt-1 text-[10px] font-bold underline flex items-center gap-1 hover:opacity-80"
+                    >
+                      <HelpCircle size={11} /> Voice Support & Play Store Guide
+                    </button>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowVoiceNotice(false)}
+                  className="p-1 rounded-md hover:bg-black/10 transition-colors"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -926,6 +993,74 @@ export default function App() {
             }
           }}
         />
+
+        {/* Voice Support Guide Modal */}
+        {showVoiceHelpModal && (
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className={`w-full max-w-sm rounded-2xl p-5 border shadow-2xl relative ${
+              isDark ? 'bg-neutral-900 border-neutral-800 text-neutral-100' : 'bg-white border-neutral-200 text-neutral-800'
+            }`}>
+              <button
+                type="button"
+                onClick={() => setShowVoiceHelpModal(false)}
+                className={`absolute top-4 right-4 p-1.5 rounded-lg ${isDark ? 'hover:bg-neutral-800' : 'hover:bg-neutral-100'}`}
+              >
+                <X size={16} />
+              </button>
+
+              <div className="flex items-center gap-2 mb-3">
+                <Volume2 className="text-indigo-500" size={20} />
+                <h3 className="font-bold text-sm">Voice Support & Play Store Guide</h3>
+              </div>
+
+              <div className="space-y-3 text-xs leading-relaxed max-h-[60vh] overflow-y-auto pr-1">
+                <div className={`p-2.5 rounded-xl border ${isDark ? 'bg-neutral-950 border-neutral-800' : 'bg-neutral-50 border-neutral-200'}`}>
+                  <p className="font-bold text-[11px] mb-1">Device Capabilities Status:</p>
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span>Text-to-Speech (Audio Prompts):</span>
+                    <span className={isSpeechSynthesisSupported() ? "text-emerald-500 font-bold" : "text-rose-500 font-bold"}>
+                      {isSpeechSynthesisSupported() ? "Supported" : "Unavailable"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] mt-1">
+                    <span>Speech Recognition (Microphone STT):</span>
+                    <span className={isSpeechRecognitionSupported() ? "text-emerald-500 font-bold" : "text-amber-500 font-bold"}>
+                      {isSpeechRecognitionSupported() ? "Supported" : "Restricted in WebView"}
+                    </span>
+                  </div>
+                </div>
+
+                <div>
+                  <h4 className="font-bold text-indigo-500 mb-1">Why is STT restricted in Play Store WebView?</h4>
+                  <p className="text-[11px] opacity-80">
+                    Standard Android WebViews disable Chrome Speech Recognition cloud services unless running inside Google Chrome directly or a Trusted Web Activity (TWA).
+                  </p>
+                </div>
+
+                <div>
+                  <h4 className="font-bold text-indigo-500 mb-1">How to enable full voice in Play Store:</h4>
+                  <ol className="list-decimal list-inside space-y-1 text-[11px] opacity-90">
+                    <li>Build Play Store Bundle using <strong>TWA (Trusted Web Activity)</strong> via Bubblewrap / PWABuilder.</li>
+                    <li>Ensure app is hosted over <strong>HTTPS</strong>.</li>
+                    <li>Or open URL directly in <strong>Google Chrome</strong> / <strong>Safari</strong> on mobile.</li>
+                  </ol>
+                </div>
+
+                <div className={`p-2 rounded-lg text-[10px] ${isDark ? 'bg-indigo-950/40 text-indigo-300' : 'bg-indigo-50 text-indigo-800'}`}>
+                  <strong>Tip:</strong> Users can tap any input field and press the microphone icon on their Gboard / iOS keyboard for instant voice dictation!
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowVoiceHelpModal(false)}
+                className="mt-4 w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl transition-all"
+              >
+                Got It
+              </button>
+            </div>
+          </div>
+        )}
 
       </div>
     </div>

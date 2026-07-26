@@ -5,9 +5,14 @@
 
 // Check if SpeechRecognition is supported
 export const isSpeechRecognitionSupported = (): boolean => {
-  return typeof window !== 'undefined' && (
+  if (typeof window === 'undefined') return false;
+  return (
     'SpeechRecognition' in window || 
-    'webkitSpeechRecognition' in window
+    'webkitSpeechRecognition' in window ||
+    'mozSpeechRecognition' in window ||
+    'msSpeechRecognition' in window ||
+    Boolean((window as any).Capacitor?.isPluginAvailable?.('SpeechRecognition')) ||
+    Boolean((window as any).plugins?.speechRecognition)
   );
 };
 
@@ -47,30 +52,37 @@ export const speak = (text: string, voiceName?: string): Promise<void> => {
       return;
     }
 
-    // On iOS Safari, cancel() can lock the engine if nothing is speaking.
-    // Let's only cancel if actively speaking.
     try {
       if (window.speechSynthesis.speaking) {
         window.speechSynthesis.cancel();
       }
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      }
     } catch (e) {
-      console.warn('Error calling cancel on speechSynthesis:', e);
+      console.warn('Error resetting speechSynthesis:', e);
     }
 
-    // A slightly longer delay (e.g. 350ms on iOS, 100ms elsewhere)
-    // ensures that any active SpeechRecognition or audio session release has completed,
-    // which is critical for iOS Safari to switch audio category from record to play.
-    const delay = isIOS() ? 350 : 100;
+    // A slightly longer delay (e.g. 350ms on mobile/Android/iOS)
+    // ensures active SpeechRecognition or audio session release has completed,
+    // which is critical for mobile WebViews to switch audio category from record to play.
+    const delay = (isIOS() || typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent)) ? 350 : 150;
 
     setTimeout(() => {
       try {
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+        }
+
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.lang = 'en-US';
+        utterance.volume = 1.0;
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
         
         // Attempt to pick a natural-sounding English voice if available
         const voices = window.speechSynthesis.getVoices();
         if (voices.length > 0) {
-          // Look for Google US English or standard English voices
           const targetVoice = voices.find(v => 
             v.name.includes('Google') && v.lang.startsWith('en')
           ) || voices.find(v => 
@@ -128,11 +140,21 @@ export class VoiceListener {
 
   constructor() {
     if (isSpeechRecognitionSupported()) {
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      this.recognition = new SpeechRecognition();
-      this.recognition.continuous = false;
-      this.recognition.interimResults = false;
-      this.recognition.lang = 'en-US';
+      try {
+        const SpeechRecognition = (window as any).SpeechRecognition || 
+                                  (window as any).webkitSpeechRecognition ||
+                                  (window as any).mozSpeechRecognition ||
+                                  (window as any).msSpeechRecognition;
+        if (SpeechRecognition) {
+          this.recognition = new SpeechRecognition();
+          this.recognition.continuous = false;
+          this.recognition.interimResults = false;
+          this.recognition.lang = 'en-US';
+        }
+      } catch (e) {
+        console.warn('SpeechRecognition instantiation error:', e);
+        this.recognition = null;
+      }
     }
   }
 
@@ -227,11 +249,21 @@ export class VoiceListener {
       return () => {};
     }
 
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    const wakeRecognition = new SpeechRecognition();
-    wakeRecognition.continuous = true;
-    wakeRecognition.interimResults = true;
-    wakeRecognition.lang = 'en-US';
+    let wakeRecognition: any = null;
+    try {
+      const SpeechRecognition = (window as any).SpeechRecognition || 
+                                (window as any).webkitSpeechRecognition ||
+                                (window as any).mozSpeechRecognition ||
+                                (window as any).msSpeechRecognition;
+      if (!SpeechRecognition) return () => {};
+      wakeRecognition = new SpeechRecognition();
+      wakeRecognition.continuous = true;
+      wakeRecognition.interimResults = true;
+      wakeRecognition.lang = 'en-US';
+    } catch (e) {
+      console.warn("Failed to create wake recognition instance:", e);
+      return () => {};
+    }
 
     let shouldRestart = true;
 
